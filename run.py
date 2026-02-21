@@ -11,13 +11,13 @@ WS_URL = "https://fawss.pi42.com/"
 
 SYMBOLS = ["XPTUSDT","XPDUSDT"]
 
-CAPITAL_PER_TRADE = 65
-RISE_PERCENT = 2          # trigger on rise
-TP_PERCENT = 1            # TP below entry
+CAPITAL_PER_TRADE = 100
+RISE_PERCENT = 3          # trigger on rise
+TP_PERCENT = 1.5            # TP below entry
 TRADE_COOLDOWN = 20
 
 MIN_QTY = {
-    "XPTUSDT": 0.003,
+    "XPTUSDT": 0.005,
     "XPDUSDT": 0.005,
 }
 
