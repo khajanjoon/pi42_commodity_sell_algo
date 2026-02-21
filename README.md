@@ -1,2 +1,1 @@
-# pi42_commodity_sell_algo
-pi42_commodity_sell_algo
+# pi_algo_commodity_only
