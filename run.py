@@ -9,7 +9,7 @@ API_SECRET = os.getenv("SECRET_KEY")
 BASE_URL = "https://fapi.pi42.com"
 WS_URL = "https://fawss.pi42.com/"
 
-SYMBOLS = ["XPTUSDT"]
+SYMBOLS = ["XPTUSDT","XPDUSDT"]
 
 CAPITAL_PER_TRADE = 65
 RISE_PERCENT = 2          # trigger on rise
@@ -18,6 +18,7 @@ TRADE_COOLDOWN = 20
 
 MIN_QTY = {
     "XPTUSDT": 0.003,
+    "XPDUSDT": 0.005,
 }
 
 sio = socketio.Client(reconnection=True)
