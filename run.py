@@ -1,80 +1,134 @@
 import socketio, requests, time, os, hashlib, hmac, threading, json, math
 from dotenv import load_dotenv
+from pathlib import Path
 
-# ========= CONFIG =========
-load_dotenv()
+# ========= LOAD ENV SAFELY =========
+load_dotenv(Path(__file__).parent / ".env")
+
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("SECRET_KEY")
 
+if not API_KEY or not API_SECRET:
+    print("❌ API keys not loaded. Check .env file")
+    exit()
+
+# ========= CONFIG =========
 BASE_URL = "https://fapi.pi42.com"
 WS_URL = "https://fawss.pi42.com/"
 
-SYMBOLS = ["XPTUSDT","XPDUSDT"]
+SYMBOLS = ["XPTUSDT"]   # change if needed
 
 CAPITAL_PER_TRADE = 100
-RISE_PERCENT = 3          # trigger on rise
-TP_PERCENT = 1.5            # TP below entry
+RISE_PERCENT = 3
+TP_PERCENT = 1.5
 TRADE_COOLDOWN = 20
 
 MIN_QTY = {
-    "XPTUSDT": 0.005,
-    "XPDUSDT": 0.005,
+    "XPTUSDT": 0.001,
 }
 
+# ========= GLOBAL STATE =========
 sio = socketio.Client(reconnection=True)
 
-prices, positions, orders = {}, {}, {}
+prices = {}
+positions = {}
+orders = {}
+
 last_trade = {s: 0 for s in SYMBOLS}
 
-# ========= SIGNATURE =========
+# ========= SIGNATURE SAFE =========
 def generate_signature(secret, message):
-    return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+    if not secret or not message:
+        return None
+
+    return hmac.new(
+        secret.encode(),
+        message.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
 
 def sign(query):
-    return hmac.new(API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+
+    if not API_SECRET or not query:
+        return None
+
+    return hmac.new(
+        API_SECRET.encode(),
+        query.encode(),
+        hashlib.sha256
+    ).hexdigest()
 
 # ========= TARGET =========
 def calculate_target(entry):
-    return int(round(entry * (1 - TP_PERCENT / 100)))
+
+    return round(entry * (1 - TP_PERCENT / 100), 2)
 
 # ========= QTY CALC =========
 def calculate_order_qty(sym):
+
     price = prices.get(sym)
+
     if not price:
         return None
+
     step = MIN_QTY.get(sym, 0.001)
+
     raw = CAPITAL_PER_TRADE / price
+
     qty = math.floor(raw / step) * step
-    return round(qty, 3) if qty >= step else None
+
+    return round(qty, 6) if qty >= step else None
 
 # ========= ORDER DATA =========
 def get_highest_buy(sym):
+
+    if sym not in orders:
+        return None
+
     buys = [
         float(o["price"])
         for o in orders.get(sym, [])
-        if o["side"] == "BUY" and o.get("price")
+        if o.get("side") == "BUY" and o.get("price")
     ]
+
     return max(buys) if buys else None
 
+
 def get_trigger_price(sym):
+
     highest = get_highest_buy(sym)
+
     if not highest:
         return None
+
     return round(highest * (1 + RISE_PERCENT / 100), 2)
 
-# ========= PLACE ORDER =========
+# ========= PLACE SELL ORDER =========
 def place_market_sell(sym):
 
-    qty = calculate_order_qty(sym)
-    if not qty:
+    if sym not in prices:
+
+        print("❌ No price available")
+
         return False
 
-    timestamp = str(int(time.time() * 1000))
-    entry_price = prices[sym]
-    tp = calculate_target(entry_price)
+    qty = calculate_order_qty(sym)
+
+    if not qty:
+
+        print("❌ Invalid qty")
+
+        return False
+
+    entry = prices[sym]
+
+    tp = calculate_target(entry)
 
     params = {
-        "timestamp": timestamp,
+
+        "timestamp": str(int(time.time() * 1000)),
         "placeType": "ORDER_FORM",
         "quantity": qty,
         "side": "SELL",
@@ -82,43 +136,74 @@ def place_market_sell(sym):
         "symbol": sym,
         "type": "MARKET",
         "reduceOnly": False,
-        "marginAsset": "INR",
+        "marginAsset": "USDT",
         "deviceType": "WEB",
         "userCategory": "EXTERNAL",
         "takeProfitPrice": tp
+
     }
 
     body = json.dumps(params, separators=(',', ':'))
 
     signature = generate_signature(API_SECRET, body)
 
+    if not signature:
+
+        print("❌ Signature failed")
+
+        return False
+
     headers = {
+
         "api-key": API_KEY,
         "signature": signature,
         "Content-Type": "application/json"
+
     }
 
-    r = requests.post(
-        f"{BASE_URL}/v1/order/place-order",
-        data=body,
-        headers=headers,
-        timeout=15
-    )
+    try:
 
-    print(f"\n🔻 SELL {sym} | Qty:{qty} | Entry:{entry_price} | TP:{tp}")
-    print("Response:", r.text)
+        r = requests.post(
+            f"{BASE_URL}/v1/order/place-order",
+            data=body,
+            headers=headers,
+            timeout=15
+        )
 
-    return True
+        print(f"\n🔻 SELL {sym} | Qty:{qty} | Entry:{entry} | TP:{tp}")
+        print("Response:", r.text)
+
+        return True
+
+    except Exception as e:
+
+        print("❌ Order failed:", e)
+
+        return False
 
 # ========= TRADE LOGIC =========
 def trade_logic(sym):
 
-    if sym not in prices:
+    if sym not in prices or prices[sym] is None:
         return
 
     if time.time() - last_trade[sym] < TRADE_COOLDOWN:
         return
 
+    pos = positions.get(sym)
+
+    # ===== FIRST ENTRY =====
+    if not pos:
+
+        print(f"⚡ No position → Opening FIRST SHORT {sym}")
+
+        if place_market_sell(sym):
+
+            last_trade[sym] = time.time()
+
+        return
+
+    # ===== ADD ENTRY =====
     trigger = get_trigger_price(sym)
 
     if not trigger:
@@ -126,7 +211,7 @@ def trade_logic(sym):
 
     if prices[sym] >= trigger:
 
-        print(f"📈 {sym} Trigger Hit → {prices[sym]} >= {trigger}")
+        print(f"📈 Rise trigger hit {sym} → {prices[sym]}")
 
         if place_market_sell(sym):
 
@@ -143,28 +228,50 @@ def fetch_positions_loop():
 
             for sym in SYMBOLS:
 
-                query = f"symbol={sym}&sortOrder=desc&pageSize=100&timestamp={ts}"
+                query = f"symbol={sym}&timestamp={ts}"
+
+                signature = sign(query)
+
+                if not signature:
+                    continue
 
                 headers = {
+
                     "api-key": API_KEY,
-                    "signature": sign(query)
+                    "signature": signature
+
                 }
 
                 r = requests.get(
                     f"{BASE_URL}/v1/positions/OPEN?{query}",
-                    headers=headers
+                    headers=headers,
+                    timeout=15
                 )
+
+                if r.status_code != 200:
+
+                    print("❌ Position API error:", r.status_code)
+
+                    positions[sym] = None
+
+                    continue
 
                 data = r.json()
 
+                if not data:
+
+                    positions[sym] = None
+
+                    continue
+
                 positions[sym] = next(
-                    (p for p in data if p["contractPair"] == sym),
+                    (p for p in data if p.get("contractPair") == sym),
                     None
                 )
 
         except Exception as e:
 
-            print("Position error:", e)
+            print("❌ Position fetch error:", e)
 
         time.sleep(10)
 
@@ -179,17 +286,34 @@ def fetch_orders_loop():
 
             query = f"timestamp={ts}"
 
+            signature = sign(query)
+
+            if not signature:
+                continue
+
             headers = {
+
                 "api-key": API_KEY,
-                "signature": sign(query)
+                "signature": signature
+
             }
 
             r = requests.get(
                 f"{BASE_URL}/v1/order/open-orders?{query}",
-                headers=headers
+                headers=headers,
+                timeout=15
             )
 
+            if r.status_code != 200:
+
+                print("❌ Orders API error:", r.status_code)
+
+                continue
+
             data = r.json()
+
+            if not data:
+                continue
 
             for sym in SYMBOLS:
 
@@ -200,7 +324,7 @@ def fetch_orders_loop():
 
         except Exception as e:
 
-            print("Order error:", e)
+            print("❌ Orders fetch error:", e)
 
         time.sleep(12)
 
@@ -217,31 +341,23 @@ def display_loop():
 
             pos = positions.get(sym)
 
-            highest = get_highest_buy(sym)
-
             trigger = get_trigger_price(sym)
 
             qty = calculate_order_qty(sym)
 
             print(f"\n🔹 {sym}")
-
             print(f"LTP: {price}")
-
-            print(f"Highest Open Buy: {highest}")
-
-            print(f"Trigger Price: {trigger}")
-
-            print(f"Next Sell Qty: {qty}")
+            print(f"Trigger: {trigger}")
+            print(f"Next Qty: {qty}")
 
             if pos:
 
-                entry = float(pos["entryPrice"])
-
-                q = float(pos["quantity"])
+                entry = float(pos.get("entryPrice", 0))
+                q = float(pos.get("quantity", 0))
 
                 pnl = (entry - price) * q if price else 0
 
-                print(f"Short Position → Qty:{q} Entry:{entry} PnL:{round(pnl,2)}")
+                print(f"Short → Qty:{q} Entry:{entry} PnL:{round(pnl,2)}")
 
             else:
 
@@ -253,31 +369,33 @@ def display_loop():
 @sio.event
 def connect():
 
-    print("WS Connected")
+    print("✅ WS Connected")
 
     sio.emit(
-        'subscribe',
-        {'params': [f"{s.lower()}@markPrice" for s in SYMBOLS]}
+        "subscribe",
+        {"params": [f"{s.lower()}@markPrice" for s in SYMBOLS]}
     )
 
-@sio.on('markPriceUpdate')
+
+@sio.on("markPriceUpdate")
 def on_price(data):
 
-    sym = data.get('s', '').upper()
+    sym = data.get("s", "").upper()
 
-    if sym in SYMBOLS:
+    price = data.get("p")
 
-        prices[sym] = float(data['p'])
+    if not sym or not price:
+        return
 
-        trade_logic(sym)
+    prices[sym] = float(price)
+
+    trade_logic(sym)
 
 # ========= MAIN =========
 if __name__ == "__main__":
 
     threading.Thread(target=fetch_positions_loop, daemon=True).start()
-
     threading.Thread(target=fetch_orders_loop, daemon=True).start()
-
     threading.Thread(target=display_loop, daemon=True).start()
 
     while True:
@@ -290,6 +408,6 @@ if __name__ == "__main__":
 
         except Exception as e:
 
-            print("WS reconnecting...", e)
+            print("⚠ WS reconnecting:", e)
 
             time.sleep(5)
