@@ -24,8 +24,8 @@ TP_PERCENT = 1.5
 TRADE_COOLDOWN = 20
 
 MIN_QTY = {
-    "XPTUSDT": 0.005,
-    "XPDUSDT": 0.005,
+    "ETHUSDT": 0.005,
+    "BTCUSDT": 0.005,
 }
 
 # ========= GLOBAL STATE =========
